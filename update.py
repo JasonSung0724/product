@@ -70,20 +70,20 @@ logger.add(log_path, level="INFO")
 class TokenManager:
     def __init__(self):
         self.token = self.get_token()
-        self.expiry_time = None
 
     def check_token(self):
         if self.token is None or self.is_expired():
             self.refresh_token()
+            if hasattr(self, "update_headers"):
+                self.update_headers()
         return self.token
 
     def is_expired(self):
-        return self.expiry_time is None or datetime.now() >= self.expiry_time
+        return self.expiry_time is None or datetime.now().timestamp() >= self.expiry_time
 
     def refresh_token(self):
         self.token = self.get_token()
-        self.expiry_time = datetime.now() + timedelta(minutes=20)
-        logger.debug(f"新 Token 已獲取，有效期至：{self.expiry_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.debug(f"==Token refreshed==")
 
     def get_token(self):
         url = "https://merchant-user-api.shoalter.com/user/login/webLogin"
@@ -101,6 +101,7 @@ class TokenManager:
 
         if response.status_code == 200:
             logger.success("登入成功！")
+            self.expiry_time = (datetime.now() + timedelta(minutes=20)).timestamp()
             return response.json()["accessToken"]
         else:
             logger.error("登入失敗，狀態碼:", response.status_code)
@@ -115,7 +116,7 @@ class PayloadGenerator:
 
     @classmethod
     def payload_format(cls):
-        with open(get_resource_path("config.json"), "r", encoding="utf-8") as f:
+        with open("config/config.json", "r", encoding="utf-8") as f:
             payload_format = json.load(f)
         return payload_format
 
@@ -162,6 +163,10 @@ class ProductAPI(TokenManager):
             "authorization": f"Bearer {self.token}",
             "content-type": "application/json",
         }
+
+    def update_headers(self):
+        """更新 headers 中的 token"""
+        self.headers["authorization"] = f"Bearer {self.token}"
 
     def search_product(self, sku_id):
         url = "https://merchant-product-api.shoalter.com/product/storeSkuIdProduct"
@@ -263,6 +268,6 @@ class UpdateTaobaoID:
             raise e
 
 
-# if __name__ == "__main__":
-#     update_taobao_id = UpdateTaobaoID(source_file="test.xlsx", max_workers=5)
-#     update_taobao_id.update_scipts()
+if __name__ == "__main__":
+    update_taobao_id = UpdateTaobaoID(source_file=r"C:\Users\07711.Jason.Sung\OneDrive - Global ICT\文件\0708.xlsx", max_workers=5)
+    update_taobao_id.update_scipts()
