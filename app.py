@@ -22,19 +22,41 @@ from update import UpdateTaobaoID
 class UpdateThread(QThread):
     finished = pyqtSignal()
     error = pyqtSignal(str)
+    stopped = pyqtSignal()
 
     def __init__(self, input_path, worker_count):
         super().__init__()
         self.input_path = input_path
         self.worker_count = worker_count
+        self._is_running = True
+        self.update_taobao_id = None
+
+    def stop(self):
+        self._is_running = False
+        if self.update_taobao_id:
+            if hasattr(self.update_taobao_id, 'stop'):
+                self.update_taobao_id.stop()
 
     def run(self):
         try:
-            update_taobao_id = UpdateTaobaoID(source_file=self.input_path, max_workers=self.worker_count)
-            update_taobao_id.update_scipts()
+            self.update_taobao_id = UpdateTaobaoID(source_file=self.input_path, max_workers=self.worker_count)
+            
+            if not self._is_running:
+                self.stopped.emit()
+                return
+                
+            self.update_taobao_id.update_scipts()
+            
+            if not self._is_running:
+                self.stopped.emit()
+                return
+                
             self.finished.emit()
         except Exception as e:
-            self.error.emit(str(e))
+            if self._is_running:
+                self.error.emit(str(e))
+            else:
+                self.stopped.emit()
 
 
 class DragDropLineEdit(QLineEdit):
@@ -151,7 +173,7 @@ class App(QWidget):
         input_layout.setSpacing(15)
 
         file_input_layout = QHBoxLayout()
-        self.input_label = QLabel("File Path：")
+        self.input_label = QLabel("File Path:")
         self.input_field = DragDropLineEdit(self)
         self.input_field.setPlaceholderText("Drag and drop file here or click browse button")
         self.input_field.textChanged.connect(self.check_input_file)
@@ -176,7 +198,7 @@ class App(QWidget):
         input_layout.addLayout(file_input_layout)
 
         worker_layout = QHBoxLayout()
-        self.worker_label = QLabel("Worker：")
+        self.worker_label = QLabel("Worker:")
         self.worker_spinbox = QSpinBox()
         self.worker_spinbox.setRange(1, 50)
         self.worker_spinbox.setValue(5)
@@ -209,6 +231,25 @@ class App(QWidget):
         self.execute_button.setCursor(Qt.PointingHandCursor)
         self.execute_button.clicked.connect(self.generate_report_handler)
         button_layout.addWidget(self.execute_button, 1)
+
+        self.stop_button = QPushButton("Stop", self)
+        self.stop_button.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #f44336;
+                color: white;
+                min-height: 40px;
+                font-size: 16px;
+            }
+            QPushButton:hover {
+                background-color: #d32f2f;
+            }
+        """
+        )
+        self.stop_button.setCursor(Qt.PointingHandCursor)
+        self.stop_button.clicked.connect(self.stop_processing)
+        self.stop_button.setEnabled(False)
+        button_layout.addWidget(self.stop_button, 1)
 
         self.open_result_button = QPushButton("Open Result", self)
         self.open_result_button.setStyleSheet(
@@ -259,25 +300,54 @@ class App(QWidget):
                 else:  # linux
                     subprocess.run(["xdg-open", self.result_file_path])
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to open result file: {e}")
+                msg = QMessageBox()
+                msg.setIcon(QMessageBox.Critical)
+                msg.setWindowTitle("Error")
+                msg.setText(f"Failed to open result file: {e}")
+                msg.setStandardButtons(QMessageBox.Ok)
+                msg.setMinimumWidth(300)
+                msg.setMinimumHeight(150)
+                msg.exec_()
         else:
-            QMessageBox.warning(self, "Warning", "Result file not found!")
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle("Warning")
+            msg.setText("Result file not found!")
+            msg.setStandardButtons(QMessageBox.Ok)
+            msg.setMinimumWidth(300)
+            msg.setMinimumHeight(150)
+            msg.exec_()
 
     def generate_report_handler(self):
         input_path = self.input_field.text()
         worker_count = self.worker_spinbox.value()
 
         if not input_path:
-            QMessageBox.critical(self, "Error", "Please select the input file path")
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Critical)
+            msg.setWindowTitle("Error")
+            msg.setText("Please select the input file path")
+            msg.setStandardButtons(QMessageBox.Ok)
+            msg.setMinimumWidth(300)
+            msg.setMinimumHeight(150)
+            msg.exec_()
             return
 
         if not input_path.lower().endswith((".xlsx", ".xls")):
-            QMessageBox.critical(self, "Error", "Please select the Excel file (.xlsx or .xls)")
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Critical)
+            msg.setWindowTitle("Error")
+            msg.setText("Please select the Excel file (.xlsx or .xls)")
+            msg.setStandardButtons(QMessageBox.Ok)
+            msg.setMinimumWidth(300)
+            msg.setMinimumHeight(150)
+            msg.exec_()
             return
 
         # Set loading state immediately
         self.execute_button.setEnabled(False)
         self.execute_button.setText("Processing...")
+        self.stop_button.setEnabled(True)
         self.open_result_button.setEnabled(False)
         self.loading_timer.start(500)
 
@@ -285,12 +355,31 @@ class App(QWidget):
         self.update_thread = UpdateThread(input_path, worker_count)
         self.update_thread.finished.connect(self.on_update_finished)
         self.update_thread.error.connect(self.on_update_error)
+        self.update_thread.stopped.connect(self.on_update_stopped)
         self.update_thread.start()
+
+    def stop_processing(self):
+        if self.update_thread and self.update_thread.isRunning():
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Question)
+            msg.setWindowTitle("Confirm Stop")
+            msg.setText("Are you sure you want to stop the current processing?")
+            msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+            msg.setDefaultButton(QMessageBox.No)
+            msg.setMinimumWidth(300)
+            msg.setMinimumHeight(150)
+            reply = msg.exec_()
+            
+            if reply == QMessageBox.Yes:
+                self.update_thread.stop()
+                self.update_thread.wait()
+                self.on_update_stopped()
 
     def on_update_finished(self):
         self.loading_timer.stop()
         self.execute_button.setEnabled(True)
         self.execute_button.setText("Start")
+        self.stop_button.setEnabled(False)
 
         file_name = os.path.splitext(os.path.basename(self.input_field.text()))[0]
         self.open_result_button.setText(f"Open {file_name}_result.xlsx")
@@ -301,18 +390,38 @@ class App(QWidget):
         msg.setWindowTitle("Success")
         msg.setText("Processing completed successfully!")
         msg.setStandardButtons(QMessageBox.Ok)
+        msg.setMinimumWidth(300)
+        msg.setMinimumHeight(150)
         msg.exec_()
 
     def on_update_error(self, error_msg):
         self.loading_timer.stop()
         self.execute_button.setEnabled(True)
         self.execute_button.setText("Start")
+        self.stop_button.setEnabled(False)
 
         msg = QMessageBox()
         msg.setIcon(QMessageBox.Critical)
         msg.setWindowTitle("Error")
         msg.setText(f"Error: {error_msg}")
         msg.setStandardButtons(QMessageBox.Ok)
+        msg.setMinimumWidth(300)
+        msg.setMinimumHeight(150)
+        msg.exec_()
+
+    def on_update_stopped(self):
+        self.loading_timer.stop()
+        self.execute_button.setEnabled(True)
+        self.execute_button.setText("Start")
+        self.stop_button.setEnabled(False)
+
+        msg = QMessageBox()
+        msg.setIcon(QMessageBox.Information)
+        msg.setWindowTitle("Stopped")
+        msg.setText("The process has been stopped by user")
+        msg.setStandardButtons(QMessageBox.Ok)
+        msg.setMinimumWidth(300)
+        msg.setMinimumHeight(150)
         msg.exec_()
 
 

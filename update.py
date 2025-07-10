@@ -100,13 +100,13 @@ class TokenManager:
         response = requests.post(url, headers=headers, json=data)
 
         if response.status_code == 200:
-            logger.success("登入成功！")
+            logger.success("Login successful!")
             self.expiry_time = (datetime.now() + timedelta(minutes=20)).timestamp()
             return response.json()["accessToken"]
         else:
-            logger.error("登入失敗，狀態碼:", response.status_code)
-            logger.error("錯誤信息:", response.text)
-            raise Exception("登入失敗，無法獲取 Token")
+            logger.error("Login failed, status code:", response.status_code)
+            logger.error("Error message:", response.text)
+            raise Exception("Login failed, unable to get Token")
 
     def __call__(self):
         return self.get_token()
@@ -127,9 +127,14 @@ class PayloadGenerator:
 
     @classmethod
     def generate_payload(cls, search_result, taobao_id, taobao_sku_id):
-        search_result = search_result["data"][0]
-        payload_format = cls.payload_format()
-        result_payload = payload_format.copy()
+        try:
+            search_result = search_result["data"][0]
+            payload_format = cls.payload_format()
+            result_payload = payload_format.copy()
+        except IndexError as e:
+            logger.error(f"Search result is empty: {e}")
+            logger.critical(f"Search result: {search_result}")
+            return None
 
         for key, value in payload_format.items():
             if key == "product":
@@ -165,7 +170,6 @@ class ProductAPI(TokenManager):
         }
 
     def update_headers(self):
-        """更新 headers 中的 token"""
         self.headers["authorization"] = f"Bearer {self.token}"
 
     def search_product(self, sku_id):
@@ -195,8 +199,19 @@ class UpdateTaobaoID:
         self.product_api = ProductAPI()
         self.df = pd.read_excel(source_file, dtype={"sku id": str, "taobao_id": str, "taobao_sku_id": str})
         self.max_workers = max_workers
+        self._is_running = True
+        self._executor = None
+
+    def stop(self):
+        self._is_running = False
+        if self._executor:
+            self._executor.shutdown(wait=False)
+            logger.info("Processing has been stopped")
 
     def process_single_row(self, row_data):
+        if not self._is_running:
+            return None
+            
         index, row = row_data
         try:
             if "status" in row and row["status"] == "success":
@@ -234,7 +249,7 @@ class UpdateTaobaoID:
         required_columns = ["sku id", "taobao_id", "taobao_sku_id"]
         for col in required_columns:
             if col not in self.df.columns:
-                raise ValueError(f"Excel 文件中缺少必要欄位：{col}")
+                raise ValueError(f"Excel file missing required column: {col}")
 
         string_columns = ["sku id", "taobao_id", "taobao_sku_id", "record_id", "error_message"]
         for col in string_columns:
@@ -242,32 +257,48 @@ class UpdateTaobaoID:
                 self.df[col] = self.df[col].fillna("").astype(str).str.rstrip(".0")
 
         try:
-            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                # Submit all tasks
-                future_to_row = {executor.submit(self.process_single_row, (index, row)): (index, row) for index, row in self.df.iterrows()}
+            self._executor = ThreadPoolExecutor(max_workers=self.max_workers)
+            
+            # Submit all tasks
+            future_to_row = {self._executor.submit(self.process_single_row, (index, row)): (index, row) for index, row in self.df.iterrows()}
 
-                # Process completed tasks
-                for future in as_completed(future_to_row):
-                    result = future.result()
-                    index = result["index"]
+            # Process completed tasks
+            for future in as_completed(future_to_row):
+                if not self._is_running:
+                    logger.info("Processing stopped, saving current progress...")
+                    break
+                    
+                result = future.result()
+                if result is None:
+                    continue
+                    
+                index = result["index"]
 
-                    # Update DataFrame with results
-                    self.df.loc[index, "status"] = result["status"]
-                    if result["record_id"]:
-                        self.df.loc[index, "record_id"] = str(result["record_id"])
-                    if result["error_message"]:
-                        self.df.loc[index, "error_message"] = str(result["error_message"])
+                # Update DataFrame with results
+                self.df.loc[index, "status"] = result["status"]
+                if result["record_id"]:
+                    self.df.loc[index, "record_id"] = str(result["record_id"])
+                if result["error_message"]:
+                    self.df.loc[index, "error_message"] = str(result["error_message"])
 
             # Save final results
             self.df.to_excel(self.output_file, index=False)
-            logger.success("All updates completed!")
+            
+            if self._is_running:
+                logger.success("All updates completed!")
+            else:
+                logger.info("Processing stopped, current progress saved")
 
         except Exception as e:
             logger.error(f"Unexpected error during processing: {e}")
             self.df.to_excel(self.output_file, index=False)
             raise e
+        finally:
+            if self._executor:
+                self._executor.shutdown(wait=True)
+                self._executor = None
 
 
-if __name__ == "__main__":
-    update_taobao_id = UpdateTaobaoID(source_file=r"C:\Users\07711.Jason.Sung\OneDrive - Global ICT\文件\0708.xlsx", max_workers=5)
-    update_taobao_id.update_scipts()
+# if __name__ == "__main__":
+#     update_taobao_id = UpdateTaobaoID(source_file=r"C:\Users\07711.Jason.Sung\OneDrive - Global ICT\文件\0708.xlsx", max_workers=5)
+#     update_taobao_id.update_scipts()
