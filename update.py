@@ -7,11 +7,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import sys
 
+
 def get_resource_path(relative_path):
     """獲取資源檔案的絕對路徑"""
-    if hasattr(sys, '_MEIPASS'):
+    if hasattr(sys, "_MEIPASS"):
         return os.path.join(sys._MEIPASS, relative_path)
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
+
 
 SETTINGS = json.load(open(get_resource_path("account.json"), "r", encoding="utf-8"))
 ACCOUNT = SETTINGS["settings"]["account"]
@@ -26,7 +28,7 @@ class TokenManager:
         self.token = self.get_token()
         self.expiry_time = None
 
-    def get_token(self):
+    def check_token(self):
         if self.token is None or self.is_expired():
             self.refresh_token()
         return self.token
@@ -60,10 +62,10 @@ class TokenManager:
             logger.error("登入失敗，狀態碼:", response.status_code)
             logger.error("錯誤信息:", response.text)
             raise Exception("登入失敗，無法獲取 Token")
-        
+
     def __call__(self):
         return self.get_token()
-    
+
 
 class PayloadGenerator:
 
@@ -136,6 +138,7 @@ class ProductAPI(TokenManager):
         logger.error(error_message)
         raise Exception(error_message)
 
+
 class UpdateTaobaoID:
 
     def __init__(self, source_file, max_workers=5):
@@ -153,6 +156,7 @@ class UpdateTaobaoID:
             taobao_id = row["taobao_id"]
             taobao_sku_id = row["taobao_sku_id"] if pd.notna(row["taobao_sku_id"]) else None
 
+            self.product_api.check_token()
             api_result = self.product_api.search_product(sku_id)
             payload = PayloadGenerator.generate_payload(api_result, taobao_id, taobao_sku_id)
             update_response = self.product_api.update_product(payload)
