@@ -9,18 +9,62 @@ import sys
 
 
 def get_resource_path(relative_path):
-    """獲取資源檔案的絕對路徑"""
     if hasattr(sys, "_MEIPASS"):
-        return os.path.join(sys._MEIPASS, relative_path)
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
+        base_path = sys._MEIPASS
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+
+    if relative_path in ["account.json", "config.json"]:
+        config_path = os.path.join(base_path, "config", relative_path)
+        if os.path.exists(config_path):
+            return config_path
+        direct_path = os.path.join(base_path, relative_path)
+        if os.path.exists(direct_path):
+            return direct_path
+        return config_path
+
+    if relative_path.startswith("logs/"):
+        logs_dir = os.path.join(base_path, "logs")
+        if not os.path.exists(logs_dir):
+            os.makedirs(logs_dir, exist_ok=True)
+        return os.path.join(logs_dir, os.path.basename(relative_path))
+
+    return os.path.join(base_path, relative_path)
 
 
-SETTINGS = json.load(open(get_resource_path("account.json"), "r", encoding="utf-8"))
+def load_settings():
+
+    possible_paths = ["./config/account.json", "./account.json", "config/account.json", "account.json"]
+    for account_path in possible_paths:
+        try:
+            if os.path.exists(account_path):
+                with open(account_path, "r", encoding="utf-8") as f:
+                    settings = json.load(f)
+                logger.info(f"Config loaded from: {account_path}")
+                return settings
+        except Exception as e:
+            logger.warning(f"Failed to load config from {account_path}: {e}")
+            continue
+    error_msg = f"Failed to find or load config. Tried paths:\n"
+    for path in possible_paths:
+        error_msg += f"  - {path} (exists: {os.path.exists(path)})\n"
+    error_msg += f"\nCurrent working directory: {os.getcwd()}\n"
+    error_msg += f"Script directory: {os.path.dirname(os.path.abspath(__file__))}\n"
+    if hasattr(sys, "_MEIPASS"):
+        error_msg += f"PyInstaller temp directory: {sys._MEIPASS}\n"
+
+    logger.error(error_msg)
+    raise FileNotFoundError(error_msg)
+
+
+SETTINGS = load_settings()
 ACCOUNT = SETTINGS["settings"]["account"]
 PASSWORD = SETTINGS["settings"]["password"]
 TMALL_LABEL = SETTINGS["tmall_label"]
 
-logger.add(get_resource_path("logs/update.log"), level="INFO")
+log_path = get_resource_path("logs/update.log")
+os.makedirs(os.path.dirname(log_path), exist_ok=True)
+logger.add(log_path, level="INFO")
 
 
 class TokenManager:
@@ -190,7 +234,7 @@ class UpdateTaobaoID:
         string_columns = ["sku id", "taobao_id", "taobao_sku_id", "record_id", "error_message"]
         for col in string_columns:
             if col in self.df.columns:
-                self.df[col] = self.df[col].fillna("").astype(str)
+                self.df[col] = self.df[col].fillna("").astype(str).str.rstrip(".0")
 
         try:
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
