@@ -288,6 +288,8 @@ class ProductBulkUpdater:
                 "status": STATUS_FAILED,
                 "error_message": resp.get("errorMessageList") or resp.get("message"),
             }
+        except IndexError as e:
+            return {"idx": idx, "status": STATUS_FAILED, "error_message": f"SKU not found : {sku}"}
         except Exception as e:
             return {"idx": idx, "status": STATUS_FAILED, "error_message": str(e)}
 
