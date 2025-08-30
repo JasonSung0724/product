@@ -3,5 +3,13 @@
         "account": "gigilee@hktv.com.hk",
         "password": "h76FcuKficavx2Ms3m+aEQ=="
         },
-    "tmall_label" : "TMALLpatch"
+    "tmall_label" : "TMALLpatch",
+    "toonies":{
+        "store_front" : "C0889001_S_",
+        "replace_dict" : {
+            "C0889001-71": "165313",
+            "C0889001-72": "165316",
+            "C0889001-73": "165319"
+        }
+    }
 }

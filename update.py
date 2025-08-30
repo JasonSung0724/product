@@ -61,6 +61,8 @@ SETTINGS = load_settings()
 ACCOUNT = SETTINGS["settings"]["account"]
 PASSWORD = SETTINGS["settings"]["password"]
 TMALL_LABEL = SETTINGS["tmall_label"]
+TOONIES_STORE_FRONT = SETTINGS["toonies"]["store_front"]
+TOONIES_REPLACE_DICT = SETTINGS["toonies"]["replace_dict"]
 
 log_path = get_resource_path("logs/update.log")
 os.makedirs(os.path.dirname(log_path), exist_ok=True)
@@ -256,10 +258,10 @@ class UpdateTaobaoID:
         string_columns = ["sku id", "taobao_id", "taobao_sku_id", "record_id", "error_message"]
         for col in string_columns:
             if col == "sku id":
-                self.df[col] = self.df[col].fillna("").astype(str)
+                self.df[col] = self.df[col].fillna("").astype(str).str.strip()
             else:
                 if col in self.df.columns:
-                    self.df[col] = self.df[col].fillna("").astype(str).str.rstrip(".0")
+                    self.df[col] = self.df[col].fillna("").astype(str).str.strip().str.rstrip(".0")
 
         try:
             self._executor = ThreadPoolExecutor(max_workers=self.max_workers)
@@ -371,9 +373,13 @@ class UpdateWarehouseID:
         for col in string_columns:
             if col in self.df.columns:
                 if col == "sku_id":
-                    self.df[col] = self.df[col].fillna("").astype(str)
+                    self.df[col] = self.df[col].fillna("").astype(str).str.strip()
+                    self.df[col] = TOONIES_STORE_FRONT + self.df[col]
                 else:
-                    self.df[col] = self.df[col].fillna("").astype(str).str.rstrip(".0")
+                    self.df[col] = self.df[col].fillna("").astype(str).str.strip().str.rstrip(".0")
+                if col == "warehouse":
+                    replace_dict = TOONIES_REPLACE_DICT
+                    self.df[col] = self.df[col].replace(replace_dict)
         try:
             self._executor = ThreadPoolExecutor(max_workers=self.max_workers)
             
@@ -418,5 +424,5 @@ class UpdateWarehouseID:
 
 
 if __name__ == "__main__":
-    update_taobao_id = UpdateWarehouseID(source_file=r"/Users/jasonsung/Downloads/test_data.xlsx", max_workers=5)
+    update_taobao_id = UpdateWarehouseID(source_file=r"/Users/jasonsung/Downloads/test_data_2.xlsx", max_workers=5)
     update_taobao_id.update_scipts()
