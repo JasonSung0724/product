@@ -257,9 +257,17 @@ class ProductBulkUpdater:
                 self.df["warehouse"] = self.df["warehouse"].replace(TOONIES_REPLACE_DICT).fillna("").astype(str)
 
     def stop(self):
+        logger.warning("Stop requested - setting _is_running = False")  # NEW
         self._is_running = False
         if self._executor:
-            self._executor.shutdown(wait=False)
+            try:
+                self._executor.shutdown(wait=False, cancel_futures=True)  # NEW (Python 3.9+)
+            except TypeError:
+                self._executor.shutdown(wait=False)
+        self._save()  # NEW 立即嘗試保存
+
+    def save_now(self):  # NEW 手動保存接口
+        self._save()
 
     def _skip(self, row) -> bool:
         status = (row.get("status") or "").lower()
@@ -288,36 +296,44 @@ class ProductBulkUpdater:
                 "status": STATUS_FAILED,
                 "error_message": resp.get("errorMessageList") or resp.get("message"),
             }
-        except IndexError as e:
-            return {"idx": idx, "status": STATUS_FAILED, "error_message": f"SKU not found : {sku}"}
+        except IndexError:
+            return {"idx": idx, "status": STATUS_FAILED, "error_message": "SKU not found"}
         except Exception as e:
             return {"idx": idx, "status": STATUS_FAILED, "error_message": str(e)}
 
     def run_updates(self):
         logger.info(f"Submitting updates mode={self.mode}")
-        self._executor = ThreadPoolExecutor(max_workers=self.max_workers)
-        futures = [self._executor.submit(self._update_row, idx, row) for idx, row in self.df.iterrows()]
-        for f in as_completed(futures):
-            r = f.result()
-            if r.get("skip"):
-                continue
-            i = r["idx"]
-            with self.lock:
-                if "status" in r:
-                    self.df.at[i, "status"] = r["status"]
-                if r.get("record_id"):
-                    self.df.at[i, "record_id"] = str(r["record_id"])
-                if r.get("error_message"):
-                    self.df.at[i, "error_message"] = str(r["error_message"])
-            st = r.get("status")
-            if st == STATUS_UPDATING:
-                logger.success(f"UPDATE SENT idx={i} record_id={r.get('record_id')}")
-            elif st == STATUS_FAILED:
-                logger.error(f"UPDATE FAIL idx={i} err={r.get('error_message')}")
-        self._executor.shutdown(wait=True)
-        self._executor = None
-        self._save()
-        logger.success("Submission phase completed")
+        try:  # NEW
+            self._executor = ThreadPoolExecutor(max_workers=self.max_workers)
+            futures = [self._executor.submit(self._update_row, idx, row) for idx, row in self.df.iterrows()]
+            for f in as_completed(futures):
+                if not self._is_running:
+                    break
+                r = f.result()
+                if r.get("skip"):
+                    continue
+                i = r["idx"]
+                with self.lock:
+                    if "status" in r:
+                        self.df.at[i, "status"] = r["status"]
+                    if r.get("record_id"):
+                        self.df.at[i, "record_id"] = str(r["record_id"])
+                    if r.get("error_message"):
+                        self.df.at[i, "error_message"] = str(r["error_message"])
+                st = r.get("status")
+                if st == STATUS_UPDATING:
+                    logger.success(f"UPDATE SENT idx={i} record_id={r.get('record_id')}")
+                elif st == STATUS_FAILED:
+                    logger.error(f"UPDATE FAIL idx={i} err={r.get('error_message')}")
+        finally:  # NEW
+            if self._executor:
+                try:
+                    self._executor.shutdown(wait=True)
+                except Exception:
+                    pass
+                self._executor = None
+            self._save()
+            logger.success("Submission phase completed (final save)")
 
     def _status_row(self, idx: int, row) -> Dict[str, Any]:
         if not self._is_running:
@@ -351,61 +367,95 @@ class ProductBulkUpdater:
         except Exception as e:
             return {"idx": idx, "status": STATUS_FAILED, "error_message": str(e)}
 
+    def _interruptible_sleep(self, seconds: int):  # NEW
+        end = time.time() + seconds
+        while time.time() < end:
+            if not self._is_running:
+                logger.warning("Sleep interrupted by stop signal")
+                return
+            time.sleep(1)
+
     def poll(self, max_retries: Optional[int] = None, retry_interval: int = 30):
         attempt = 0
-        while True:
-            if not self._is_running:
-                logger.warning("Polling stopped")
-                break
-            updating_mask = self.df["status"].str.lower() == STATUS_UPDATING
-            pending = self.df[updating_mask]
-            if pending.empty:
-                logger.success("No updating rows")
-                break
-            if max_retries is not None and attempt >= max_retries:
-                logger.warning("Reached max_retries")
-                break
-            attempt += 1
-            logger.info(f"Polling attempt {attempt} pending={len(pending)}")
-            self._executor = ThreadPoolExecutor(max_workers=self.max_workers)
-            futures = [self._executor.submit(self._status_row, idx, row) for idx, row in pending.iterrows()]
-            for f in as_completed(futures):
-                r = f.result()
-                if r.get("skip"):
-                    continue
-                i = r["idx"]
-                with self.lock:
-                    self.df.at[i, "status"] = r["status"]
-                    if r.get("error_message"):
-                        self.df.at[i, "error_message"] = r["error_message"]
-                if r["status"] == STATUS_SUCCESS:
-                    logger.success(f"STATUS idx={i} success")
-                elif r["status"] == STATUS_FAILED:
-                    logger.error(f"STATUS idx={i} failed {r.get('error_message')}")
-                elif r["status"] == STATUS_UPDATING:
-                    logger.info(f"STATUS idx={i} updating")
-            self._executor.shutdown(wait=True)
-            self._executor = None
+        logger.info("Start polling phase")
+        try:  # NEW
+            while True:
+                if not self._is_running:
+                    logger.warning("Polling loop detected stop flag, breaking")
+                    break
+                updating_mask = self.df["status"].str.lower() == STATUS_UPDATING
+                pending = self.df[updating_mask]
+                if pending.empty:
+                    logger.success("No updating rows")
+                    break
+                if max_retries is not None and attempt >= max_retries:
+                    logger.warning("Reached max_retries")
+                    break
+                attempt += 1
+                logger.info(f"Polling attempt {attempt} pending={len(pending)}")
+                self._executor = ThreadPoolExecutor(max_workers=self.max_workers)
+                futures = [self._executor.submit(self._status_row, idx, row) for idx, row in pending.iterrows()]
+                for f in as_completed(futures):
+                    if not self._is_running:
+                        break
+                    r = f.result()
+                    if r.get("skip"):
+                        continue
+                    i = r["idx"]
+                    with self.lock:
+                        self.df.at[i, "status"] = r["status"]
+                        if r.get("error_message"):
+                            self.df.at[i, "error_message"] = r["error_message"]
+                    if r["status"] == STATUS_SUCCESS:
+                        logger.success(f"STATUS idx={i} success")
+                    elif r["status"] == STATUS_FAILED:
+                        logger.error(f"STATUS idx={i} failed {r.get('error_message')}")
+                    elif r["status"] == STATUS_UPDATING:
+                        logger.info(f"STATUS idx={i} still updating")
+                if self._executor:
+                    try:
+                        self._executor.shutdown(wait=True)
+                    except Exception:
+                        pass
+                    self._executor = None
+                self._save()  # 迴圈內保存
+                if not (self.df["status"].str.lower() == STATUS_UPDATING).any():
+                    logger.success("All rows reached terminal status")
+                    break
+                logger.info(f"Sleep {retry_interval}s before next polling round")
+                self._interruptible_sleep(retry_interval)  # NEW 可中斷
+        except Exception as e:  # NEW
+            logger.exception(f"Polling encountered exception: {e}")
+        finally:  # NEW
+            if self._executor:
+                try:
+                    self._executor.shutdown(wait=False)
+                except Exception:
+                    pass
+                self._executor = None
             self._save()
-            if not (self.df["status"].str.lower() == STATUS_UPDATING).any():
-                logger.success("All rows reached terminal status")
-                break
-            logger.info(f"Sleep {retry_interval}s before next polling round")
-            time.sleep(retry_interval)
-        logger.success("Polling finished")
+            logger.success("Polling finished (final save)")
 
     def run_with_status_monitoring(self, max_retries: Optional[int] = None, retry_interval: int = 30, skip_update_phase: bool = False):
         if not skip_update_phase:
             self.run_updates()
         else:
             logger.info("Skip submission phase")
-        self.poll(max_retries=max_retries, retry_interval=retry_interval)
+        if self._is_running:
+            self.poll(max_retries=max_retries, retry_interval=retry_interval)
+        else:
+            logger.warning("Skipping poll because updater stopped early")
 
     def _save(self):
-        with self.lock:
-            self.df.to_excel(self.output_file, index=False)
+        try:
+            with self.lock:
+                self.df.to_excel(self.output_file, index=False)
             logger.debug(f"Saved {self.output_file}")
+        except Exception as e:
+            logger.error(f"Save failed: {e}")
 
 if __name__ == "__main__":
-    update = ProductBulkUpdater(source_file=r"/Users/jasonsung/Downloads/test_data_2_result.xlsx", max_workers=5, mode="warehouse")
+    update = ProductBulkUpdater(source_file=r"/Users/jasonsung/Downloads/test_data_2.xlsx",
+                                max_workers=5,
+                                mode="warehouse")
     update.run_with_status_monitoring(max_retries=None, retry_interval=5)
