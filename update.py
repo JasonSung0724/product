@@ -126,7 +126,7 @@ class PayloadGenerator:
         return tmall_setting
 
     @classmethod
-    def generate_payload(cls, search_result, taobao_id, taobao_sku_id):
+    def generate_payload(cls, search_result, taobao_id=None, taobao_sku_id=None, warehouse_id=None):
         try:
             search_result = search_result["data"][0]
             payload_format = cls.payload_format()
@@ -134,7 +134,7 @@ class PayloadGenerator:
         except IndexError as e:
             logger.error(f"Search result is empty: {e}")
             logger.critical(f"Search result: {search_result}")
-            return None
+            raise IndexError(f"Search result is empty: {e}")
 
         for key, value in payload_format.items():
             if key == "product":
@@ -153,8 +153,10 @@ class PayloadGenerator:
                                     logger.warning(f"Key {k2} not found in search result")
                     else:
                         logger.warning(f"Key {k1} not found in search result")
-
-        result_payload["product"]["additional"]["hktv"]["external_platform"] = cls.tmall_setting(taobao_id, taobao_sku_id)
+        if warehouse_id:
+            result_payload["product"]["additional"]["hktv"]["warehouse_id"] = warehouse_id
+        else:
+            result_payload["product"]["additional"]["hktv"]["external_platform"] = cls.tmall_setting(taobao_id, taobao_sku_id)
         # logger.info(f"Update payload: {result_payload}")
         return result_payload
 
@@ -299,6 +301,117 @@ class UpdateTaobaoID:
                 self._executor = None
 
 
-# if __name__ == "__main__":
-#     update_taobao_id = UpdateTaobaoID(source_file=r"C:\Users\07711.Jason.Sung\OneDrive - Global ICT\文件\0708.xlsx", max_workers=5)
-#     update_taobao_id.update_scipts()
+class UpdateWarehouseID:
+
+    def __init__(self, source_file, max_workers=5):
+        self.output_file = source_file.replace(".xlsx", "_result.xlsx")
+        self.product_api = ProductAPI()
+        self.df = pd.read_excel(source_file, dtype={"SKU_ID": str, "Warehouse": str})
+        self.max_workers = max_workers
+        self._is_running = True
+        self._executor = None
+
+    def stop(self):
+        self._is_running = False
+        if self._executor:
+            self._executor.shutdown(wait=False)
+            logger.info("Processing has been stopped")
+
+    def process_single_row(self, row_data):
+        if not self._is_running:
+            return None
+            
+        index, row = row_data
+        try:
+            if "status" in row and row["status"] == "success":
+                return {"index": index, "status": "success", "record_id": row["record_id"], "error_message": None}
+            sku_id = row["sku_id"]
+            warehouse = row["warehouse"]
+
+            self.product_api.check_token()
+            api_result = self.product_api.search_product(sku_id)
+            payload = PayloadGenerator.generate_payload(search_result=api_result, warehouse_id=warehouse)
+            update_response = self.product_api.update_product(payload)
+
+            result = {
+                "index": index,
+                "status": "success" if update_response["status"] == 1 else "failed",
+                "record_id": update_response["data"]["recordId"] if update_response["status"] == 1 else None,
+                "error_message": update_response.get("errorMessageList", None) if update_response["status"] != 1 else None,
+            }
+            logger.info(f"Process row {index} : {sku_id}")
+
+            if result["status"] == "success":
+                logger.success(f"Update success: {sku_id}")
+            else:
+                logger.error(f"Update failed: {sku_id}")
+
+            return result
+        
+        except IndexError as e:
+            logger.error(f"Error processing {sku_id}: {str(e)}")
+            return {"index": index, "status": "failed", "error_message": f"SKU_ID not found {sku_id}", "record_id": None}
+
+        except Exception as e:
+            logger.error(f"Error processing {sku_id}: {str(e)}")
+            return {"index": index, "status": "failed", "error_message": str(e), "record_id": None}
+        
+
+    def update_scipts(self):
+        self.df.columns = self.df.columns.str.strip().str.lower()
+        required_columns = ["sku_id", "warehouse"]
+        for col in required_columns:
+            if col not in self.df.columns:
+                raise ValueError(f"Excel file missing required column: {col}")
+
+        string_columns = ["sku_id", "warehouse", "record_id", "error_message"]
+        for col in string_columns:
+            if col in self.df.columns:
+                self.df[col] = self.df[col].fillna("").astype(str).str.rstrip(".0")
+
+        try:
+            self._executor = ThreadPoolExecutor(max_workers=self.max_workers)
+            
+            # Submit all tasks
+            future_to_row = {self._executor.submit(self.process_single_row, (index, row)): (index, row) for index, row in self.df.iterrows()}
+
+            # Process completed tasks
+            for future in as_completed(future_to_row):
+                if not self._is_running:
+                    logger.info("Processing stopped, saving current progress...")
+                    break
+                    
+                result = future.result()
+                if result is None:
+                    continue
+                    
+                index = result["index"]
+
+                # Update DataFrame with results
+                self.df.loc[index, "status"] = result["status"]
+                if result["record_id"]:
+                    self.df.loc[index, "record_id"] = str(result["record_id"])
+                if result["error_message"]:
+                    self.df.loc[index, "error_message"] = str(result["error_message"])
+
+            # Save final results
+            self.df.to_excel(self.output_file, index=False)
+            
+            if self._is_running:
+                logger.success("All updates completed!")
+            else:
+                logger.info("Processing stopped, current progress saved")
+
+        except Exception as e:
+            logger.error(f"Unexpected error during processing: {e}")
+            self.df.to_excel(self.output_file, index=False)
+            raise e
+        finally:
+            if self._executor:
+                self._executor.shutdown(wait=True)
+                self._executor = None
+
+
+if __name__ == "__main__":
+    update_taobao_id = UpdateWarehouseID(source_file=r"/Users/jasonsung/Downloads/test_data.xlsx", max_workers=5)
+    update_taobao_id.update_scipts()
