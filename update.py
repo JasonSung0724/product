@@ -255,8 +255,11 @@ class UpdateTaobaoID:
 
         string_columns = ["sku id", "taobao_id", "taobao_sku_id", "record_id", "error_message"]
         for col in string_columns:
-            if col in self.df.columns:
-                self.df[col] = self.df[col].fillna("").astype(str).str.rstrip(".0")
+            if col == "sku id":
+                self.df[col] = self.df[col].fillna("").astype(str)
+            else:
+                if col in self.df.columns:
+                    self.df[col] = self.df[col].fillna("").astype(str).str.rstrip(".0")
 
         try:
             self._executor = ThreadPoolExecutor(max_workers=self.max_workers)
@@ -367,8 +370,10 @@ class UpdateWarehouseID:
         string_columns = ["sku_id", "warehouse", "record_id", "error_message"]
         for col in string_columns:
             if col in self.df.columns:
-                self.df[col] = self.df[col].fillna("").astype(str).str.rstrip(".0")
-
+                if col == "sku_id":
+                    self.df[col] = self.df[col].fillna("").astype(str)
+                else:
+                    self.df[col] = self.df[col].fillna("").astype(str).str.rstrip(".0")
         try:
             self._executor = ThreadPoolExecutor(max_workers=self.max_workers)
             
