@@ -64,7 +64,7 @@ STATUS_UPDATING = "updating"
 STATUS_SUCCESS = "success"
 STATUS_FAILED = "failed"
 STATUS_FAIL_ALT = "fail"
-SKIP_STATUSES = {STATUS_SUCCESS, STATUS_FAILED, STATUS_FAIL_ALT, STATUS_UPDATING}
+SKIP_STATUSES = {STATUS_SUCCESS, STATUS_UPDATING}
 
 class TokenManager:
     def __init__(self) -> None:
@@ -282,6 +282,9 @@ class ProductBulkUpdater:
         try:
             if self._skip(row):
                 return {"idx": idx, "skip": True}
+            if row["status"] in [STATUS_FAIL_ALT, STATUS_FAILED]:
+                if row["error_message"] == "SKU not found":
+                    return {"idx": idx, "skip": True}
             sku_col = "sku id" if "sku id" in row else "sku_id"
             sku = row.get(sku_col, "")
             if not sku:
