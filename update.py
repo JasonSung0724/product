@@ -158,7 +158,7 @@ class PayloadGenerator:
         return {"source": [TMALL_LABEL], "product_id": product_id, "sku_id": sku_id}
 
     @classmethod
-    def build(cls, search_result: Dict[str, Any], taobao_id: Optional[str] = None, taobao_sku_id: Optional[str] = None, warehouse_id: Optional[str] = None) -> Dict[str, Any]:
+    def build(cls, search_result: Dict[str, Any], taobao_id: Optional[str] = None, taobao_sku_id: Optional[str] = None, warehouse_id: Optional[str] = None, product_ready_day: Optional[str] = None) -> Dict[str, Any]:
         data = search_result["data"][0]
         base = copy.deepcopy(cls.template())
         if "product" in base:
@@ -171,6 +171,7 @@ class PayloadGenerator:
         hktv = base["product"].setdefault("additional", {}).setdefault("hktv", {})
         if warehouse_id:
             hktv["warehouse_id"] = warehouse_id
+            hktv["product_ready_days"] = product_ready_day
             hktv.pop("external_platform", None)
         else:
             hktv.pop("warehouse_id", None)
@@ -197,7 +198,7 @@ def build_payload_taobao(row, search_res):
     return PayloadGenerator.build(search_res, taobao_id=row.get("taobao_id"), taobao_sku_id=(row.get("taobao_sku_id") or None))
 
 def build_payload_warehouse(row, search_res):
-    return PayloadGenerator.build(search_res, warehouse_id=row.get("warehouse"))
+    return PayloadGenerator.build(search_res, warehouse_id=row.get("warehouse"), product_ready_day=row.get("product_ready_day"))
 
 MODE_CONFIG: Dict[str, Dict[str, Any]] = {
     "taobao": {
@@ -205,7 +206,7 @@ MODE_CONFIG: Dict[str, Dict[str, Any]] = {
         "builder": build_payload_taobao,
     },
     "warehouse": {
-        "required": ["sku_id", "warehouse"],
+        "required": ["sku_id", "warehouse", "product_ready_day"],
         "builder": build_payload_warehouse,
     },
 }
@@ -294,6 +295,7 @@ class ProductBulkUpdater:
             resp = self.api.update_product(payload)
             if resp.get("status") == 1:
                 return {"idx": idx, "status": STATUS_UPDATING, "record_id": resp.get("data", {}).get("recordId")}
+            logger.info(f"Update failed: {resp}")
             return {
                 "idx": idx,
                 "status": STATUS_FAILED,
@@ -386,7 +388,7 @@ class ProductBulkUpdater:
                 if not self._is_running:
                     logger.warning("Polling loop detected stop flag, breaking")
                     break
-                updating_mask = self.df["status"].str.lower() == STATUS_UPDATING
+                updating_mask = self.df["status"].fillna("").str.lower() == STATUS_UPDATING
                 pending = self.df[updating_mask]
                 if pending.empty:
                     logger.success("No updating rows")
@@ -422,7 +424,7 @@ class ProductBulkUpdater:
                         pass
                     self._executor = None
                 self._save()  # 迴圈內保存
-                if not (self.df["status"].str.lower() == STATUS_UPDATING).any():
+                if not (self.df["status"].fillna("").str.lower() == STATUS_UPDATING).any():
                     logger.success("All rows reached terminal status")
                     break
                 logger.info(f"Sleep {retry_interval}s before next polling round")
@@ -458,7 +460,7 @@ class ProductBulkUpdater:
             logger.error(f"Save failed: {e}")
 
 if __name__ == "__main__":
-    update = ProductBulkUpdater(source_file=r"/Users/jasonsung/Downloads/test_data_2.xlsx",
+    update = ProductBulkUpdater(source_file=r"/Users/jasonsung/Downloads/testData.xlsx",
                                 max_workers=5,
                                 mode="warehouse")
     update.run_with_status_monitoring(max_retries=None, retry_interval=5)
