@@ -158,7 +158,15 @@ class PayloadGenerator:
         return {"source": [TMALL_LABEL], "product_id": product_id, "sku_id": sku_id}
 
     @classmethod
-    def build(cls, search_result: Dict[str, Any], taobao_id: Optional[str] = None, taobao_sku_id: Optional[str] = None, warehouse_id: Optional[str] = None, product_ready_day: Optional[str] = None) -> Dict[str, Any]:
+    def build(
+        cls, 
+        search_result: Dict[str, Any], 
+        taobao_id: Optional[str] = None, 
+        taobao_sku_id: Optional[str] = None, 
+        warehouse_id: Optional[str] = None, 
+        product_ready_day: Optional[str] = None, 
+        custom_field: Optional[dict] = None
+    ) -> Dict[str, Any]:
         data = search_result["data"][0]
         base = copy.deepcopy(cls.template())
         if "product" in base:
@@ -169,6 +177,16 @@ class PayloadGenerator:
                     if k in data:
                         base["product"][k] = data[k]
         hktv = base["product"].setdefault("additional", {}).setdefault("hktv", {})
+        if custom_field:
+            fields = list(custom_field.keys())
+            for field in fields:
+                if field in hktv:
+                    hktv[field] = custom_field[field]
+                else:
+                    raise ValueError(f"Invalid custom field {field}")
+            return base
+
+        
         if warehouse_id:
             hktv["warehouse_id"] = warehouse_id
             hktv["product_ready_days"] = product_ready_day
@@ -200,6 +218,14 @@ def build_payload_taobao(row, search_res):
 def build_payload_warehouse(row, search_res):
     return PayloadGenerator.build(search_res, warehouse_id=row.get("warehouse"), product_ready_day=row.get("product_ready_day"))
 
+def build_payload_custom_field(row, search_res):
+    custom_field = row.to_dict()
+    custom_field.pop("sku_id")
+    custom_field.pop("status")
+    custom_field.pop("record_id")
+    custom_field.pop("error_message")
+    return PayloadGenerator.build(search_res, custom_field=custom_field)
+
 MODE_CONFIG: Dict[str, Dict[str, Any]] = {
     "taobao": {
         "required": ["sku id", "taobao_id"],
@@ -209,6 +235,10 @@ MODE_CONFIG: Dict[str, Dict[str, Any]] = {
         "required": ["sku_id", "warehouse", "product_ready_day"],
         "builder": build_payload_warehouse,
     },
+    "custom_field":{
+        "required": ["sku_id"],
+        "builder": build_payload_custom_field,
+    }
 }
 
 class ProductBulkUpdater:
@@ -248,14 +278,24 @@ class ProductBulkUpdater:
                 raise ValueError(f"Missing required column {col}")
         for c in self.cfg["required"]:
             self.df[c] = self.df[c].fillna("").astype(str).str.strip()
-        for extra in ["status", "record_id", "error_message"]:
-            if extra not in self.df.columns:
-                self.df[extra] = ""
+        
         if self.mode == "warehouse":
             if "sku_id" in self.df.columns:
                 self.df["sku_id"] = self.df["sku_id"].apply(lambda x: (TOONIES_STORE_FRONT + x) if x and not x.startswith(TOONIES_STORE_FRONT) else x)
             if "warehouse" in self.df.columns:
                 self.df["warehouse"] = self.df["warehouse"].replace(TOONIES_REPLACE_DICT).fillna("").astype(str)
+        if self.mode == "custom_field":
+            if "sku_id" in self.df.columns:
+                self.df["sku_id"] = self.df["sku_id"].apply(lambda x: (TOONIES_STORE_FRONT + x) if x and not x.startswith(TOONIES_STORE_FRONT) else x)
+            logger.debug(list(self.df.columns))
+            for col in list(self.df.columns):
+                if col != "sku_id" and col not in PayloadGenerator.template()["product"]["additional"]["hktv"]:
+                    raise ValueError(f"Invalid custom field {col}")
+        for extra in ["status", "record_id", "error_message"]:
+            if extra not in self.df.columns:
+                self.df[extra] = ""
+            
+
 
     def stop(self):
         logger.warning("Stop requested - setting _is_running = False")  # NEW
@@ -460,7 +500,7 @@ class ProductBulkUpdater:
             logger.error(f"Save failed: {e}")
 
 if __name__ == "__main__":
-    update = ProductBulkUpdater(source_file=r"/Users/jasonsung/Downloads/testData.xlsx",
+    update = ProductBulkUpdater(source_file=r"/Users/jasonsung/Downloads/test.xlsx",
                                 max_workers=5,
-                                mode="warehouse")
+                                mode="custom_field")
     update.run_with_status_monitoring(max_retries=None, retry_interval=5)
