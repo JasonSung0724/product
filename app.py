@@ -164,13 +164,16 @@ class App(QWidget):
         mode_label = QLabel("Mode:")
         self.radio_taobao = QRadioButton("Taobao")
         self.radio_warehouse = QRadioButton("Warehouse")
+        self.radio_custom_field = QRadioButton("Custom Field")
         self.radio_taobao.setChecked(True)
         self.mode_group = QButtonGroup(self)
         self.mode_group.addButton(self.radio_taobao)
         self.mode_group.addButton(self.radio_warehouse)
+        self.mode_group.addButton(self.radio_custom_field)
         mode_row.addWidget(mode_label)
         mode_row.addWidget(self.radio_taobao)
         mode_row.addWidget(self.radio_warehouse)
+        mode_row.addWidget(self.radio_custom_field)
         mode_row.addStretch()
         input_layout.addLayout(mode_row)
 
@@ -249,7 +252,7 @@ class App(QWidget):
     def start_processing(self):
         input_path = self.input_field.text()
         worker_count = self.worker_spinbox.value()
-        mode = "taobao" if self.radio_taobao.isChecked() else "warehouse"
+        mode = "taobao" if self.radio_taobao.isChecked() else "warehouse" if self.radio_warehouse.isChecked() else "custom_field"
         if not input_path:
             self._msg("Error", "Please select the input file path", QMessageBox.Critical)
             return

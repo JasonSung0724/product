@@ -289,7 +289,7 @@ class ProductBulkUpdater:
                 self.df["sku_id"] = self.df["sku_id"].apply(lambda x: (TOONIES_STORE_FRONT + x) if x and not x.startswith(TOONIES_STORE_FRONT) else x)
             logger.debug(list(self.df.columns))
             for col in list(self.df.columns):
-                if col != "sku_id" and col not in PayloadGenerator.template()["product"]["additional"]["hktv"]:
+                if col not in ["sku_id", "status", "record_id", "error_message"] and col not in PayloadGenerator.template()["product"]["additional"]["hktv"]:
                     raise ValueError(f"Invalid custom field {col}")
         for extra in ["status", "record_id", "error_message"]:
             if extra not in self.df.columns:
