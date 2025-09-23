@@ -2,3 +2,5 @@ pandas
 loguru
 requests
 PyQt5
+openpyxl
+deepdiff

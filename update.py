@@ -10,6 +10,9 @@ from typing import Any, Dict, Optional, Callable
 import pandas as pd
 import requests
 from loguru import logger
+from deepdiff import DeepDiff
+
+
 
 def get_resource_path(p: str) -> str:
     if hasattr(sys, "_MEIPASS"):
@@ -181,7 +184,7 @@ class PayloadGenerator:
             fields = list(custom_field.keys())
             for field in fields:
                 if field in hktv:
-                    hktv[field] = custom_field[field]
+                    hktv[field] = type(hktv[field])(custom_field[field])
                 else:
                     raise ValueError(f"Invalid custom field {field}")
             return base
@@ -332,6 +335,19 @@ class ProductBulkUpdater:
                 return {"idx": idx, "status": STATUS_FAILED, "error_message": "Missing SKU"}
             search_res = self.api.search_product(sku)
             payload = self._payload(row, search_res)
+            diff = DeepDiff(payload["product"], search_res["data"][0], ignore_numeric_type_changes=True, ignore_string_type_changes=True)
+            if "type_changes" in diff:
+                check_all = True
+                for k, v in diff["type_changes"].items():
+                    if str(v["old_value"]) != str(v["new_value"]):
+                        check_all = False
+                        break
+                if check_all:
+                    diff.pop("type_changes")
+            if "values_changed" not in diff and "type_changes" not in diff:
+                logger.info(f"SKU data in not changed -> {sku}")
+                return {"idx": idx, "status": STATUS_SUCCESS, "error_message": "No changes"}
+
             resp = self.api.update_product(payload)
             if resp.get("status") == 1:
                 return {"idx": idx, "status": STATUS_UPDATING, "record_id": resp.get("data", {}).get("recordId")}
@@ -341,7 +357,7 @@ class ProductBulkUpdater:
                 "status": STATUS_FAILED,
                 "error_message": resp.get("errorMessageList") or resp.get("message"),
             }
-        except IndexError:
+        except IndexError as e:
             return {"idx": idx, "status": STATUS_FAILED, "error_message": "SKU not found"}
         except Exception as e:
             return {"idx": idx, "status": STATUS_FAILED, "error_message": str(e)}
